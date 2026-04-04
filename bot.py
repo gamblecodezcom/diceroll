@@ -1,5 +1,9 @@
 """
 Telegram Dice Hunt bot — per-group games, HTML messages, deep-link join for DMs.
+
+Telegram HTML: only supported tags (<b>, <code>, <a>, …). Line breaks use newline
+characters in the string, not <br> or other layout tags.
+https://core.telegram.org/bots/api#html-style
 """
 from __future__ import annotations
 
@@ -35,7 +39,7 @@ ROLL_MIN, ROLL_MAX = 1, 100
 
 
 def _prize_link_html(url: str) -> str:
-    """Clickable anchor + visible escaped URL for Telegram HTML."""
+    """Clickable <a> plus escaped plain URL; newlines are literal, not tags."""
     href = html.escape(url, quote=True)
     visible = html.escape(url, quote=False)
     return f'<a href="{href}">Open prize link</a>\n{visible}'
@@ -198,7 +202,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<code>/rules</code> — rules\n"
         "<code>/status</code> — hunt status in this chat\n"
         "<code>/join</code> — in a group: button to open the bot and register\n\n"
-        "<i>Tip: If prize DMs fail, the winner must open this bot and press Start.</i>"
+        "Tip: If prize DMs fail, the winner must open this bot and press Start."
     )
     await update.message.reply_html(text)
 

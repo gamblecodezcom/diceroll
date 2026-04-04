@@ -5,7 +5,7 @@ Group dice game: closest roll to a secret target wins. The prize URL is removed 
 ## Features
 
 - **Per-chat games** — multiple groups can run hunts at the same time.
-- **HTML messages** — bold, code, and safe escaping for names and links.
+- **HTML messages** — only [Telegram-supported tags](https://core.telegram.org/bots/api#html-style) (`<b>`, `<code>`, `<a>`, …). Line breaks are **plain newline characters** in the text, not `<br>` or other layout tags.
 - **Join flow** — inline button and `/join` open `t.me/YourBot?start=join_<group_id>` so players press **Start** in DM; then `/roll` works in the group and the bot can DM the prize.
 - **Background timer** — non-blocking; reminder at 105s; winner announcement at 210s.
 - **Keep-alive HTTP** — `GET /` and `GET /health` on `PORT` (default `8080`, bind `0.0.0.0`) for Replit, fps.ms, or other hosts that expect a web process.
