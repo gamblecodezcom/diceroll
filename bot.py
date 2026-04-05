@@ -1,10 +1,11 @@
 """
-Telegram Dice Roll bot — Cwallet-style claim URL, winner-only reveal via callbacks.
+Telegram Dice Roll bot — Cwallet claim URL revealed only to the winner via callback
+whisper (answerCallbackQuery + show_alert). No DMs for the prize.
 
-Telegram has no per-user message bubbles in groups. The "whisper" is implemented with
-CallbackQuery: answerCallbackQuery (popup) and/or a private DM with the full URL.
+Telegram caps alert text at ~200 characters; longer claim URLs cannot be shown in full
+in a popup — use a shortener or the host must remit the link another way.
 
-HTML: only supported tags (<b>, <code>, <a>, …). Newlines are literal, not <br>.
+HTML in chat messages: only supported tags. Newlines are literal, not <br>.
 https://core.telegram.org/bots/api#html-style
 """
 from __future__ import annotations
@@ -32,17 +33,14 @@ logging.basicConfig(
 )
 log = logging.getLogger("dice_roll")
 
-# --- Config ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-JOIN_PAYLOAD_PREFIX = "join_"
 ROUND_DURATION_SEC = 210
 HALFWAY_REMINDER_SEC = 105
 ABORT_WINDOW_SEC = 30
 ROLL_MIN, ROLL_MAX = 1, 100
-# Callback data must stay within Telegram's 64-byte limit; "r" + 16 hex = 17 bytes
 REVEAL_NONCE_HEX_BYTES = 8
-# Popup text max ~200 chars; long URLs go to DM
-CALLBACK_ALERT_MAX = 180
+# Telegram: answerCallbackQuery text max 200 characters
+CALLBACK_ALERT_MAX = 200
 
 
 def _parse_admin_ids() -> set[int]:
@@ -63,19 +61,10 @@ RESTRICT_ROLL_COMMANDS = os.environ.get("RESTRICT_ROLL_COMMANDS", "").lower() in
     "true",
     "yes",
 )
-# Legacy env name (hunt) still honored
 if os.environ.get("RESTRICT_HUNT_COMMANDS", "").lower() in ("1", "true", "yes"):
     RESTRICT_ROLL_COMMANDS = True
 
-
-# nonce (hex) -> chat_id for inline "reveal" buttons (cleared when a new round starts)
 _reveal_nonce_to_chat: dict[str, int] = {}
-
-
-def _prize_link_html(url: str) -> str:
-    href = html.escape(url, quote=True)
-    visible = html.escape(url, quote=False)
-    return f'<a href="{href}">Open claim link</a>\n{visible}'
 
 
 @dataclass
@@ -86,7 +75,6 @@ class DiceRound:
     players: dict[int, dict[str, Any]] = field(default_factory=dict)
     winner_id: int | None = None
     start_time: float = 0.0
-    joined_private: set[int] = field(default_factory=set)
     timer_task: asyncio.Task | None = None
     reveal_nonce: str | None = None
 
@@ -106,30 +94,7 @@ def _invalidate_reveal(round_state: DiceRound) -> None:
         round_state.reveal_nonce = None
 
 
-def _bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
-    u = context.bot.username
-    if u:
-        return u
-    return os.environ.get("BOT_USERNAME", "YOUR_BOT_USERNAME")
-
-
-def join_keyboard(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> InlineKeyboardMarkup:
-    uname = _bot_username(context)
-    url = f"https://t.me/{uname}?start={JOIN_PAYLOAD_PREFIX}{chat_id}"
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🎲 Open bot & join this round (for DMs)",
-                    url=url,
-                )
-            ]
-        ]
-    )
-
-
 def winner_reveal_keyboard(nonce: str) -> InlineKeyboardMarkup:
-    """Callback payload r<nonce>; only the stored winner may receive the URL."""
     data = f"r{nonce}"
     if len(data.encode("utf-8")) > 64:
         log.error("callback_data too long: %s", len(data))
@@ -137,7 +102,7 @@ def winner_reveal_keyboard(nonce: str) -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton(
-                    "🔒 Reveal claim link (winner only)",
+                    "🔒 Reveal claim link (winner only — private)",
                     callback_data=data,
                 )
             ]
@@ -182,7 +147,6 @@ async def round_timer(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
                     "Roll with <code>/roll</code> before time runs out."
                 ),
                 parse_mode="HTML",
-                reply_markup=join_keyboard(context, chat_id),
             )
         await asyncio.sleep(ROUND_DURATION_SEC - HALFWAY_REMINDER_SEC)
         if g.is_active:
@@ -196,42 +160,19 @@ async def round_timer(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
-    args = context.args or []
-
-    if args and args[0].startswith(JOIN_PAYLOAD_PREFIX):
-        rest = args[0][len(JOIN_PAYLOAD_PREFIX) :]
-        if rest.lstrip("-").isdigit():
-            target_chat_id = int(rest)
-            g = _game(target_chat_id)
-            if not g.is_active:
-                await update.message.reply_html(
-                    "No active dice round in that chat.\n"
-                    "Wait for the next one or ask a mod to start it."
-                )
-                return
-            g.joined_private.add(update.effective_user.id)
-            await update.message.reply_html(
-                "<b>You are registered for this round.</b>\n\n"
-                "Return to the group and send <code>/roll</code> before the timer ends.\n"
-                "If you win, use the <b>Reveal claim link</b> button — only you will see it."
-            )
-            return
-
     text = (
         "<b>Dice Roll</b> — closest roll wins the Cwallet claim.\n\n"
-        "The claim URL never appears in the group chat. After the round, only the winner "
-        "can use the inline button; others get a denial. The URL is shown as a private "
-        "popup and/or sent to your DMs.\n\n"
+        "The claim URL is never posted in the group. When the round ends, "
+        "<b>only the winner</b> can tap <b>Reveal claim link</b>; Telegram shows it "
+        f"as a <b>private popup</b> (whisper), not in the chat. Max ~{CALLBACK_ALERT_MAX} "
+        "characters — use a short link if your claim URL is longer.\n\n"
         "<b>In a group</b>\n"
-        "• Tap <b>Join</b> (or the link), press <b>Start</b> here, then <code>/roll</code> in the group.\n"
-        "• <code>/create_roll &lt;claim_url&gt;</code> — host starts a round "
+        "• <code>/create_roll &lt;claim_url&gt;</code> — start "
         f"({ROUND_DURATION_SEC // 60}m {ROUND_DURATION_SEC % 60}s). "
-        "<code>/create_hunt</code> still works as an alias.\n"
+        "Alias: <code>/create_hunt</code>.\n"
         "• <code>/roll</code> — once per round.\n"
-        f"• <code>/abort_roll</code> — cancel in the first {ABORT_WINDOW_SEC}s "
-        "(<code>/abort_hunt</code> alias).\n\n"
-        "<b>Commands</b>\n"
-        "<code>/help</code> <code>/rules</code> <code>/status</code> <code>/join</code>"
+        f"• <code>/abort_roll</code> — first {ABORT_WINDOW_SEC}s (alias <code>/abort_hunt</code>).\n\n"
+        "<code>/help</code> <code>/rules</code> <code>/status</code>"
     )
     await update.message.reply_html(text)
 
@@ -247,22 +188,22 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await update.message.reply_html(
         "<b>Dice Roll — commands</b>\n"
-        f"<code>/start</code> — intro &amp; join registration\n"
+        f"<code>/start</code> — overview\n"
         f"<code>/create_roll &lt;url&gt;</code> — new round ({ROUND_DURATION_SEC}s)\n"
         f"<code>/roll</code> — one roll ({ROLL_MIN}–{ROLL_MAX})\n"
         f"<code>/abort_roll</code> — abort within {ABORT_WINDOW_SEC}s\n"
         f"<code>/status</code> — time left &amp; rolls\n"
-        f"<code>/join</code> — post join button\n"
         f"<code>/rules</code> — rules\n\n"
-        f"<b>Winner claim</b>\n"
-        "After the round, tap <b>Reveal claim link (winner only)</b>. Telegram shows a "
-        "private popup and/or sends the full URL in DM. Non-winners only see an error popup.\n\n"
-        f"<b>Host env</b>\n"
-        f"<code>RESTRICT_ROLL_COMMANDS</code> / legacy <code>RESTRICT_HUNT_COMMANDS</code>: <b>{restrict}</b>\n"
+        "<b>Winner — whisper only</b>\n"
+        "Tap <b>Reveal claim link</b> on the result message. Only you see the popup; "
+        f"others get an error. No DMs. Telegram allows up to ~{CALLBACK_ALERT_MAX} "
+        "characters in that popup — shorten long Cwallet links.\n\n"
+        f"<b>Env</b>\n"
+        f"<code>RESTRICT_ROLL_COMMANDS</code> / <code>RESTRICT_HUNT_COMMANDS</code>: <b>{restrict}</b>\n"
         f"{admins_note}"
-        f"<code>BOT_TOKEN</code> required. <code>PORT</code> for optional HTTP keep-alive.\n\n"
-        "<b>VPS + PM2</b>\n"
-        "Run alongside Node: use a different <code>PORT</code> for this bot (see <code>ecosystem.config.example.cjs</code>)."
+        "<code>BOT_TOKEN</code> required. <code>PORT</code> for optional HTTP.\n\n"
+        "<b>PM2 + Node</b>\n"
+        "Separate <code>PORT</code> per process; one <code>BOT_TOKEN</code> per poller."
     )
 
 
@@ -271,32 +212,11 @@ async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_html(
         "<b>Rules</b>\n"
-        f"• Secret target integer {ROLL_MIN}–{ROLL_MAX}.\n"
+        f"• Secret target {ROLL_MIN}–{ROLL_MAX}.\n"
         "• One roll per player per round.\n"
-        "• Closest to the target wins.\n"
-        "• Tie-break: earliest roll wins.\n"
-        "• Claim URL: host passes it to the bot; it is not posted to the group.\n"
-        "• Winner reveals via the inline button (callback) — private to them."
-    )
-
-
-async def cmd_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
-        return
-    chat = update.effective_chat
-    if chat.type not in ("group", "supergroup"):
-        await update.message.reply_html(
-            "Use <code>/join</code> in a <b>group</b> with an active round."
-        )
-        return
-    g = _game(chat.id)
-    if not g.is_active:
-        await update.message.reply_html("No active round in this group.")
-        return
-    await update.message.reply_html(
-        "<b>Join this round</b>\n"
-        "Tap the button, press <b>Start</b> in private chat, then <code>/roll</code> here.",
-        reply_markup=join_keyboard(context, chat.id),
+        "• Closest to the target wins; tie-break: earliest roll.\n"
+        "• Claim URL is not shown in the group.\n"
+        f"• Winner gets the link in a private callback popup only (~{CALLBACK_ALERT_MAX} chars max)."
     )
 
 
@@ -315,7 +235,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"Target hidden ({ROLL_MIN}–{ROLL_MAX}).",
         f"Time left: ~{left}s",
         f"Players rolled: {len(g.players)}",
-        f"Registered (DM): {len(g.joined_private)}",
     ]
     if g.players:
         lines.append("")
@@ -382,20 +301,26 @@ async def create_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     g.claim_url = claim
     g.players.clear()
     g.winner_id = None
-    g.joined_private.clear()
     g.start_time = time.time()
+
+    warn = ""
+    if len(claim) > CALLBACK_ALERT_MAX:
+        warn = (
+            f"\n\n⚠️ This URL is longer than ~{CALLBACK_ALERT_MAX} characters. "
+            "The winner may not see the full link in the whisper popup — use a URL shortener."
+        )
 
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
             "🔔 <b>Dice Roll started!</b>\n"
             f"Secret target {ROLL_MIN}–{ROLL_MAX}. You have <b>{ROUND_DURATION_SEC}s</b>.\n"
-            f"<code>/abort_roll</code> works in the first <b>{ABORT_WINDOW_SEC}s</b>.\n\n"
-            "<b>Join</b> via the button (and <b>Start</b> in DM), then <code>/roll</code>.\n"
-            "The Cwallet claim is revealed only to the winner via a private button tap."
+            f"<code>/abort_roll</code> in the first <b>{ABORT_WINDOW_SEC}s</b>.\n\n"
+            "Send <code>/roll</code> in this chat. The winner reveals the claim via "
+            "<b>private popup</b> only (no DM)."
+            f"{warn}"
         ),
         parse_mode="HTML",
-        reply_markup=join_keyboard(context, chat_id),
     )
 
     g.timer_task = asyncio.create_task(round_timer(chat_id, context))
@@ -432,8 +357,7 @@ async def abort_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
-    chat = update.effective_chat
-    chat_id = chat.id
+    chat_id = update.effective_chat.id
     g = _game(chat_id)
 
     if not g.is_active:
@@ -442,13 +366,6 @@ async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     user_id = user.id
     user_name = user.first_name or user.username or str(user_id)
-
-    if chat.type in ("group", "supergroup") and user_id not in g.joined_private:
-        await update.message.reply_html(
-            "<b>Register first</b> (button below + <b>Start</b> in DM), then roll.",
-            reply_markup=join_keyboard(context, chat_id),
-        )
-        return
 
     if user_id in g.players:
         await update.message.reply_html("You already rolled this round. 🛑")
@@ -504,7 +421,8 @@ async def announce_winner(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Target was <code>{g.target}</code>.\n\n"
         f"👑 Winner: {wn} — roll <code>{winning_roll}</code> "
         f"(off by <code>{closest_diff}</code>).\n\n"
-        "🔒 <b>Winner:</b> tap the button below. Others will not see your claim link."
+        "🔒 <b>Winner:</b> tap the button. You will see the claim link in a "
+        "<b>private popup</b> only. Everyone else sees a denial — nothing is DMed."
     )
 
     try:
@@ -549,7 +467,7 @@ async def on_reveal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     g = _game(chat_id) if chat_id is not None else None
 
     async def deny(msg: str) -> None:
-        await q.answer(text=msg[:200], show_alert=True)
+        await q.answer(text=msg[:CALLBACK_ALERT_MAX], show_alert=True)
 
     if not g or g.reveal_nonce != nonce or g.winner_id is None:
         await deny("This reveal button is no longer valid.")
@@ -564,39 +482,14 @@ async def on_reveal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await deny("No claim URL is stored for this round.")
         return
 
-    dm_ok = False
-    try:
-        await context.bot.send_message(
-            chat_id=g.winner_id,
-            text="👑 <b>Your claim link</b>\n\n" + _prize_link_html(url),
-            parse_mode="HTML",
-            disable_web_page_preview=False,
-        )
-        dm_ok = True
-    except Forbidden:
-        dm_ok = False
-    except BadRequest:
-        dm_ok = False
-
-    if dm_ok:
-        await q.answer(
-            text="Full claim link sent to your private chat with this bot.",
-            show_alert=True,
+    if len(url) > CALLBACK_ALERT_MAX:
+        await deny(
+            "Claim URL is too long for Telegram's private popup (200 char max). "
+            "Ask the host for a shortened link next round."
         )
         return
 
-    # No DM: try to fit URL in popup (Telegram ~200 char limit for alert text)
-    if len(url) <= CALLBACK_ALERT_MAX:
-        await q.answer(text=url, show_alert=True)
-        return
-
-    await q.answer(
-        text=(
-            "Open a private chat with this bot, press Start, then tap the button again "
-            "to receive the full link."
-        ),
-        show_alert=True,
-    )
+    await q.answer(text=url, show_alert=True)
 
 
 def main() -> None:
@@ -617,7 +510,6 @@ def main() -> None:
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("rules", cmd_rules))
     application.add_handler(CommandHandler("status", cmd_status))
-    application.add_handler(CommandHandler("join", cmd_join))
     application.add_handler(CommandHandler("create_roll", create_roll))
     application.add_handler(CommandHandler("create_hunt", create_roll))
     application.add_handler(CommandHandler("abort_roll", abort_roll))
