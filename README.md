@@ -1,47 +1,79 @@
-# Dice Roll Telegram Bot
+# Dice Roll Giveaway (Telegram)
 
-Closest roll wins. The host passes a **Cwallet (or any) HTTPS claim URL** with `/create_roll`; it is **not** posted in the group (command deleted when the bot can delete it).
+Dice giveaway with **Cwallet-style HTTPS claim links**, **multi-winner** (one URL per winner line), **countdown**, **max players**, and **winner-only whisper** via **callback popup** (no DMs).
 
-## Whisper only (no winner DM)
+## Loud group entry (avoid “Enter” accidents)
 
-Telegram cannot show different message text per user in the same group bubble. The bot uses an **inline keyboard** and **callback query**:
+In the group, run:
 
-- After the round, the winner announcement includes **Reveal claim link (winner only — private)**.
-- On tap, the bot calls **`answerCallbackQuery`** with **`show_alert=True`**.
-  - **Winner:** private popup contains the full claim URL (whisper).
-  - **Anyone else:** popup says they are not the winner — **no URL**.
+- `/dice_roll_giveaway` or **`/dice_roll`**
 
-**No DMs** are sent for the prize.
+The bot replies with a **big warning** and an inline button:
 
-**Limit:** Telegram allows about **200 characters** for callback alert text. If the claim URL is longer, the winner sees an error asking the host to use a **URL shortener** next time. The bot warns the group when a round starts if the URL is too long.
+**Do not press Enter on the command — tap the button** to open the bot in private chat.
 
-## Features
+## Host flow (DM)
 
-- Per-chat rounds, HTML in messages (Telegram-supported tags only).
-- Aliases: `/create_hunt`, `/abort_hunt`.
-- Optional `RESTRICT_ROLL_COMMANDS` (legacy `RESTRICT_HUNT_COMMANDS`).
-- Optional HTTP keep-alive on `PORT` (`/` and `/health`).
+1. Tap the button from the group message.
+2. `/start` runs with a deep link; the bot asks for **claim URL(s)**.
+   - One URL = one winner.
+   - **Multiple lines** = multiple URLs (1st line = 1st place, …).
+3. Use inline toggles:
+   - **Countdown** (60 … 600s)
+   - **Max players** (0 = unlimited, or cap)
+   - **Winners** (1–5)
+4. Tap **LAUNCH IN GROUP**.
 
-## Setup
+Only **group admins** (or `BOT_ADMINS`) can complete setup for that group.
 
-1. Bot from [@BotFather](https://t.me/BotFather).
-2. **Group privacy off** so `/roll` works in groups.
-3. **Delete messages** optional — hides the host command with the URL.
+## Players
 
-## VPS + PM2
+- `/roll` once per round in the group.
+- After the round, each winner taps **their** reveal button → **private popup** with the URL (Telegram ~200 character limit — shorten long links).
 
-See `ecosystem.config.example.cjs`. Use a **different `PORT`** than your Node app. **One `BOT_TOKEN` per** long-polling process.
+## Quick host command (group)
 
-## Commands (groups)
+`/create_roll <https://url>` — single winner, default 210s, no max cap (same as before).
 
-- `/create_roll <url>` — start round. Alias: `/create_hunt`.
-- `/roll` — once per round.
-- `/abort_roll` — first 30s. Alias: `/abort_hunt`.
-- `/status`
+## Webhook (primary) vs polling
 
-## Commands (DM)
+| Mode | When |
+|------|------|
+| **Webhook** | `WEBHOOK_URL` or `WEBHOOK_BASE_URL` set, and `USE_POLLING` not `true` |
+| **Polling** | No webhook URL, or `USE_POLLING=true` |
 
-- `/start`, `/help`, `/rules`
+**Webhook:** Put **HTTPS** on nginx/Caddy in front of the bot. Example:
+
+```nginx
+location /telegram/webhook {
+    proxy_pass http://127.0.0.1:8080/telegram/webhook;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+Set `WEBHOOK_URL=https://your.domain/telegram/webhook` to match.
+
+**Polling:** `keep_alive` still serves `/health` on `PORT` for PM2/uptime.
+
+## Env vars
+
+See `.env.example`.
+
+## PM2
+
+Use `ecosystem.config.example.cjs`. **One bot token per polling/webhook process.** If Node uses the same token, do not run two pollers.
+
+## Commands
+
+| Command | Where |
+|---------|--------|
+| `/dice_roll_giveaway`, `/dice_roll` | Group — attention + open-bot button |
+| `/start` | DM — setup wizard (via button link) |
+| `/roll` | Group |
+| `/create_roll`, `/create_hunt` | Group — quick single-URL round |
+| `/abort_roll`, `/abort_hunt` | Group |
+| `/status`, `/help`, `/rules` | Both |
 
 ## License
 

@@ -4,7 +4,8 @@
  *
  * 1. Use a BOT_TOKEN that is NOT already used by another polling bot process.
  * 2. Set PORT to a port your Node app does not bind (e.g. 8090).
- * 3. From this directory: pm2 start ecosystem.config.example.cjs --only dice-roll-bot
+ * 3. Webhook: set WEBHOOK_URL=https://your.domain/telegram/webhook and proxy to PORT.
+ * 4. From this directory: pm2 start ecosystem.config.example.cjs --only dice-roll-bot
  */
 module.exports = {
   apps: [
@@ -17,6 +18,9 @@ module.exports = {
         BOT_TOKEN: "REPLACE_ME",
         PORT: "8090",
         BIND: "0.0.0.0",
+        // WEBHOOK_URL: "https://your.domain/telegram/webhook",
+        // WEBHOOK_SECRET: "optional-secret",
+        // USE_POLLING: "true",
       },
       autorestart: true,
       max_restarts: 10,
