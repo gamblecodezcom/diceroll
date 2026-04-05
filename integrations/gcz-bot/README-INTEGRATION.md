@@ -73,6 +73,7 @@ Register commands, e.g.:
 ```
 dice_roll_giveaway - Giveaway (tap button in group)
 dice_roll - Same
+dice_help - Full walkthrough + Telegram HTML rules
 create_roll - Quick round with URL (admin)
 roll - Roll
 abort_roll - Abort first 30s
@@ -85,9 +86,11 @@ Same **`TELEGRAM_BOT_TOKEN`** as Node → **only one** runtime may use it. Use *
 
 ## 7. Behaviour
 
-- Group: `/dice_roll_giveaway` → loud message + **tap to open bot** (not Enter-only).
-- DM: paste HTTPS claim URLs (one line per winner), toggles, **LAUNCH IN GROUP**.
-- Winners: each gets a **Reveal** button → **`answerCallbackQuery` popup only** (~200 char URL max).
+- Group: `/dice_roll_giveaway` → ASCII banner + **tap to open bot** + optional “what next” callback.
+- Live round: inline **How do I play?** / **prizes** / **status** (callbacks answered so Telegram never spins).
+- DM: paste URLs, toggles, **LAUNCH** or **Cancel setup** (clears stuck wizard).
+- `/dice_help` — full start-to-finish + allowed HTML tags note.
+- Winners: **Reveal** → **`answerCallbackQuery` popup only** (~200 char URL max). Errors use `safeAnswerCb` so old queries do not crash the handler.
 
 ## 8. Legacy CommonJS
 

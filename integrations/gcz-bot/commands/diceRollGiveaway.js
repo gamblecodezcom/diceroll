@@ -1,16 +1,10 @@
 /**
- * Dice Roll Giveaway — Gamblecodez `bot/commands/diceRollGiveaway.js`
+ * Dice Roll Giveaway — wire from `bot.js` (Node / Telegraf, ESM).
+ * bots-hub.js → bot.handleUpdate() only; no Python.
  *
- * ESM (matches bots-hub.js / bot.js `import` style).
- * Wire from `/var/www/html/gcz/bot/bot.js` only — bots-hub.js stays unchanged; it already
- * forwards `POST /webhook` → `bot.handleUpdate()` (KVM1_MODE=1, no polling).
- *
- * Env (/var/www/html/gcz/.env):
- *   TELEGRAM_BOT_TOKEN     — already used by your bot (Telegraf)
- *   TELEGRAM_BOT_USERNAME  — optional; fallback for t.me/ links if botInfo missing
- *   BOT_USERNAME           — optional alias for username
- *   BOT_ADMINS             — optional comma-separated Telegram user IDs
- *   RESTRICT_ROLL_COMMANDS / RESTRICT_HUNT_COMMANDS — "true"|"1"|"yes" → admin-only host cmds
+ * Telegram HTML: use only <b>, <i>, <u>, <s>, <code>, <pre>, <a href="...">.
+ * No raw <br> — line breaks are \n in the string.
+ * https://core.telegram.org/bots/api#html-style
  */
 
 import crypto from "crypto";
@@ -28,6 +22,8 @@ const REVEAL_NONCE_HEX_BYTES = 8;
 const DURATION_OPTIONS = [60, 120, 180, 210, 300, 600];
 const MAX_PLAYER_OPTIONS = [0, 5, 10, 20, 50, 100];
 const WINNER_COUNT_OPTIONS = [1, 2, 3, 4, 5];
+
+const DICE_FACES = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
 
 function parseAdminIds() {
   const raw = (process.env.BOT_ADMINS || "").trim();
@@ -81,6 +77,10 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
+function diceEmojiForRoll(n) {
+  return DICE_FACES[(Math.abs(n - 1) % 6 + 6) % 6];
+}
+
 /** @type {Map<number, object>} */
 const games = new Map();
 /** @type {Map<string, { chatId: number, idx: number }>} */
@@ -118,6 +118,14 @@ function clearRevealRound(g) {
   for (const n of g.revealNonces) revealNonceToInfo.delete(n);
   g.revealNonces = [];
   g.winnerIds = [];
+}
+
+async function safeAnswerCb(ctx, opts) {
+  try {
+    await ctx.answerCbQuery(opts);
+  } catch (_) {
+    /* query too old / already answered — don’t break the bot */
+  }
 }
 
 async function isPrivilegedInGroup(ctx) {
@@ -182,6 +190,20 @@ function setupKeyboard(ud) {
       [{ text: btnText(`👥 Max players: ${maxLabel}`), callback_data: "dr:su:max" }],
       [{ text: btnText(`🏆 Winners: ${nw}`), callback_data: "dr:su:nwin" }],
       [{ text: btnText("🚀 LAUNCH IN GROUP"), callback_data: "dr:su:go" }],
+      [{ text: btnText("❌ Cancel setup"), callback_data: "dr:su:cancel" }],
+    ],
+  };
+}
+
+/** Player helpers on live round messages (callbacks always answered). */
+function liveRoundKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: btnText("🎲 How do I play?"), callback_data: "dr:hint:play" },
+        { text: btnText("🏆 How do prizes work?"), callback_data: "dr:hint:prize" },
+      ],
+      [{ text: btnText("📊 Refresh status (/status)"), callback_data: "dr:hint:status" }],
     ],
   };
 }
@@ -211,6 +233,31 @@ function pickWinners(g, k) {
   return out;
 }
 
+const MSG_HTML_GUIDE =
+  "<b>Telegram HTML (what this bot uses)</b>\n" +
+  "Allowed tags: <code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, <code>&lt;u&gt;</code>, " +
+  "<code>&lt;s&gt;</code>, <code>&lt;code&gt;</code>, <code>&lt;pre&gt;</code>, " +
+  "<code>&lt;a href=\"…\"&gt;</code>.\n" +
+  "Line breaks = new lines in the message, <u>not</u> <code>&lt;br&gt;</code>.\n" +
+  "Prize links in popups: max ~200 characters — shorten with a link shortener.";
+
+const MSG_FULL_WALKTHROUGH =
+  "<b>🎰 Dice Roll Giveaway — start to finish</b>\n\n" +
+  "<b>1 — Host (group admin)</b>\n" +
+  "Send <code>/dice_roll_giveaway</code> or <code>/dice_roll</code>.\n" +
+  "<b>Do not only press Enter.</b> Tap <b>OPEN BOT</b> on the card.\n\n" +
+  "<b>2 — Host (private chat with bot)</b>\n" +
+  "Paste <b>one https:// claim URL per line</b> (line 1 = 1st place).\n" +
+  "Tap toggles: countdown, max players, number of winners.\n" +
+  "Tap <b>LAUNCH IN GROUP</b>.\n\n" +
+  "<b>3 — Everyone (group)</b>\n" +
+  "Send <code>/roll</code> once before time runs out.\n" +
+  "Use the <b>How do I play?</b> button if you forget.\n\n" +
+  "<b>4 — After the round</b>\n" +
+  "Winners tap <b>only their</b> Reveal button — link shows in a <b>private popup</b>.\n\n" +
+  "<b>Stuck?</b> Tap <b>Cancel setup</b> in DM, or run the group command again.\n" +
+  "<code>/dice_help</code> shows this anytime.";
+
 /**
  * Call first inside your private-chat /start handler.
  * @param {import('telegraf').Context} ctx
@@ -223,7 +270,9 @@ export async function tryHandleGiveawayStart(ctx) {
 
   const hexPart = payload.slice(GIVE_PREFIX.length);
   if (!/^[0-9a-fA-F]+$/.test(hexPart)) {
-    await ctx.replyWithHTML("Invalid setup link. Post <code>/dice_roll_giveaway</code> in the group again.");
+    await ctx.replyWithHTML(
+      "Invalid setup link. Ask the host to run <code>/dice_roll_giveaway</code> in the group again."
+    );
     return true;
   }
   let gid;
@@ -246,10 +295,12 @@ export async function tryHandleGiveawayStart(ctx) {
   giveawaySetups.set(uid, ud);
 
   await ctx.replyWithHTML(
-    "<b>Step 1 — Claim link(s)</b>\n\n" +
-      "Send <b>one HTTPS URL</b> per line. Line 1 = 1st place, line 2 = 2nd, …\n\n" +
-      "<b>Step 2 — Settings</b>\n" +
-      "Use the buttons, then <b>LAUNCH IN GROUP</b>.",
+    "<b>🎯 Host setup — step 1 of 2</b>\n\n" +
+      "Paste your <b>Cwallet / claim</b> links:\n" +
+      "• <b>One winner</b> → one line starting with <code>https://</code>\n" +
+      "• <b>Multiple winners</b> → one URL per line (top = 1st place)\n\n" +
+      "<b>Step 2</b> — use the buttons to tune the game, then <b>LAUNCH IN GROUP</b>.\n\n" +
+      MSG_HTML_GUIDE,
     { reply_markup: setupKeyboard(ud) }
   );
   return true;
@@ -268,8 +319,10 @@ function scheduleRoundEnd(telegram, chatId) {
       if (!gg.isActive) return;
       await telegram.sendMessage(
         chatId,
-        "⏳ <b>Halfway.</b> Send <code>/roll</code> if you have not yet.",
-        { parse_mode: "HTML" }
+        "⏳ <b>Halfway there!</b>\n" +
+          "Still in? Send <code>/roll</code> in <u>this</u> chat if you have not yet.\n" +
+          "Tap <b>How do I play?</b> on the giveaway message if you need a hint.",
+        { parse_mode: "HTML", reply_markup: liveRoundKeyboard() }
       );
     } catch (_) {}
   }, halfMs);
@@ -296,7 +349,11 @@ async function announceWinners(telegram, chatId) {
     return;
   }
   if (!g.players.size) {
-    await telegram.sendMessage(chatId, "No rolls — no winners. 🌑", { parse_mode: "HTML" });
+    await telegram.sendMessage(
+      chatId,
+      "🌑 <b>No dice on the table</b>\nNobody rolled — no winners this round.",
+      { parse_mode: "HTML" }
+    );
     clearRevealRound(g);
     return;
   }
@@ -307,7 +364,7 @@ async function announceWinners(telegram, chatId) {
     g.claimUrls = g.claimUrls.slice(0, winners.length);
   }
   if (!winners.length) {
-    await telegram.sendMessage(chatId, "No winners ranked. 🌑", { parse_mode: "HTML" });
+    await telegram.sendMessage(chatId, "🌑 <b>Could not pick winners.</b>", { parse_mode: "HTML" });
     clearRevealRound(g);
     return;
   }
@@ -317,21 +374,37 @@ async function announceWinners(telegram, chatId) {
   g.revealNonces = winners.map(() => tokenHex(REVEAL_NONCE_HEX_BYTES));
   g.revealNonces.forEach((n, i) => revealNonceToInfo.set(n, { chatId, idx: i }));
 
-  const lines = ["⚔️ <b>ROUND OVER!</b>\n", `Target was <code>${g.target}</code>.\n`];
+  const banner =
+    "<pre>╔══════════════════════╗\n" +
+    "║  🎲  ROUND COMPLETE  🎲  ║\n" +
+    "╚══════════════════════╝</pre>\n";
+
+  const lines = [
+    banner,
+    "<b>🎊 The vault number was…</b> <code>" + g.target + "</code>\n",
+    "<b>🏆 Winners</b>",
+  ];
   const buttons = [];
   winners.forEach((w, i) => {
     const rank = i + 1;
     const [, name, rollV, diff] = w;
-    const medal = rank === 1 ? "👑" : `#${rank}`;
-    lines.push(`${medal} <b>${escapeHtml(name)}</b> — <code>${rollV}</code> (off <code>${diff}</code>)`);
+    const medal = rank === 1 ? "👑" : "🥈";
+    const label = rank === 1 ? "1st" : rank === 2 ? "2nd" : rank === 3 ? "3rd" : `${rank}th`;
+    lines.push(
+      `${medal} <b>${label}:</b> ${escapeHtml(name)} → <code>${rollV}</code> <i>(off ${diff})</i>`
+    );
     buttons.push([
       {
-        text: btnText(`🔒 ${medal} Reveal #${rank} (winner only)`),
+        text: btnText(`🔐 ${label}: tap YOUR prize`),
         callback_data: `${CB_REVEAL_PREFIX}${g.revealNonces[i]}`,
       },
     ]);
   });
-  lines.push("", "<b>Winners:</b> tap <b>your</b> button — private popup only.");
+  lines.push(
+    "",
+    "<b>Winners:</b> tap <u>your</u> button only — <b>private popup</b>, not visible to others.",
+    "<i>Not a winner?</i> Buttons will say so — no spoilers in chat."
+  );
 
   const caption = lines.join("\n");
   const markup = { inline_keyboard: buttons };
@@ -349,8 +422,13 @@ async function announceWinners(telegram, chatId) {
     } else {
       await telegram.sendMessage(chatId, caption, { parse_mode: "HTML", reply_markup: markup });
     }
-  } catch {
-    await telegram.sendMessage(chatId, caption, { parse_mode: "HTML", reply_markup: markup });
+  } catch (e) {
+    console.error("[diceRollGiveaway] announce", e);
+    try {
+      await telegram.sendMessage(chatId, caption, { parse_mode: "HTML", reply_markup: markup });
+    } catch (e2) {
+      console.error("[diceRollGiveaway] announce fallback", e2);
+    }
   }
 }
 
@@ -363,23 +441,35 @@ async function launchGiveaway(ctx, ud) {
   if (urls.length < nw) {
     return ctx.telegram.sendMessage(
       uid,
-      `You need at least ${nw} claim URL line(s). Send URLs, then tap LAUNCH again.`,
+      `<b>Need more links</b>\nYou chose <b>${nw}</b> winner(s) but only have <b>${urls.length}</b> URL line(s).\nPaste more lines, then tap <b>LAUNCH</b> again.`,
       { parse_mode: "HTML" }
     );
   }
   if (!(await isUserAdminOfChat(ctx, uid, gid))) {
-    return ctx.telegram.sendMessage(uid, "You are not an admin in that group anymore.");
+    return ctx.telegram.sendMessage(
+      uid,
+      "<b>Permission changed</b>\nYou are not an admin in that group anymore.",
+      { parse_mode: "HTML" }
+    );
   }
 
   const g = getGame(gid);
   if (g.isActive) {
-    return ctx.telegram.sendMessage(uid, "That group already has an active round.");
+    return ctx.telegram.sendMessage(
+      uid,
+      "<b>Already live</b>\nThat group already has a round running. Wait for it to finish.",
+      { parse_mode: "HTML" }
+    );
   }
 
   const useUrls = urls.slice(0, nw).map((u) => u.trim());
   for (const u of useUrls) {
     if (!/^https?:\/\//i.test(u)) {
-      return ctx.telegram.sendMessage(uid, "Every line must be an http(s) URL.");
+      return ctx.telegram.sendMessage(
+        uid,
+        "<b>Invalid line</b>\nEvery line must start with <code>http://</code> or <code>https://</code>.",
+        { parse_mode: "HTML" }
+      );
     }
   }
 
@@ -397,29 +487,52 @@ async function launchGiveaway(ctx, ud) {
   let warn = "";
   useUrls.forEach((u, i) => {
     if (u.length > CALLBACK_ALERT_MAX) {
-      warn += `\n⚠️ Prize ${i + 1} URL is long; use a shortener (~${CALLBACK_ALERT_MAX} popup limit).`;
+      warn += `\n⚠️ Prize <b>${i + 1}</b> URL is long — shorten for the ~${CALLBACK_ALERT_MAX}-char popup.`;
     }
   });
 
+  const openUrl = openBotSetupUrl(ctx, gid);
+  const hostRow = openUrl
+    ? [[{ text: btnText("🔁 Host: open setup again"), url: openUrl }]]
+    : [];
+
+  const liveBanner =
+    "<pre>╔══════════════════════════╗\n" +
+    "║ 🎰  DICE ROLL LIVE  🎰  ║\n" +
+    "╚══════════════════════════╝</pre>\n";
+
   await ctx.telegram.sendMessage(
     gid,
-    "🎲 <b>GIVEAWAY LIVE</b> 🎲\n" +
-      `Closest to secret target — <b>${nw}</b> winner(s).\n` +
-      `⏱ <b>${g.durationSec}s</b>. <code>/abort_roll</code> first <b>${ABORT_WINDOW_SEC}s</b> (admins).\n\n` +
-      "<code>/roll</code> once each. Winners: <b>Reveal</b> = private popup only." +
+    liveBanner +
+      "<b>Giveaway is ON!</b> ✨\n\n" +
+      `<b>Goal:</b> roll closest to the secret number (${ROLL_MIN}–${ROLL_MAX}).\n` +
+      `<b>Winners:</b> <b>${nw}</b>\n` +
+      `<b>Time:</b> <code>${g.durationSec}s</code>\n` +
+      (g.maxPlayers ? `<b>Cap:</b> <code>${g.maxPlayers}</code> players\n` : "<b>Cap:</b> open to all\n") +
+      "\n<b>Your move:</b> send <code>/roll</code> here <u>once</u>.\n" +
+      `<b>Admins:</b> <code>/abort_roll</code> works in the first <b>${ABORT_WINDOW_SEC}s</b>.` +
       warn,
-    { parse_mode: "HTML" }
+    {
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [...hostRow, ...liveRoundKeyboard().inline_keyboard],
+      },
+    }
   );
 
   scheduleRoundEnd(ctx.telegram, gid);
 
   try {
-    await ctx.editMessageText("<b>Giveaway started</b> in the group.", {
-      parse_mode: "HTML",
-      reply_markup: { inline_keyboard: [] },
-    });
+    await ctx.editMessageText(
+      "<b>✅ Launched!</b>\nThe giveaway is running in the group. You can close this chat.",
+      { parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+    );
   } catch {
-    await ctx.telegram.sendMessage(uid, "Giveaway started in the group.", { parse_mode: "HTML" });
+    await ctx.telegram.sendMessage(
+      uid,
+      "<b>✅ Launched!</b>\nCheck the group — the round is live.",
+      { parse_mode: "HTML" }
+    );
   }
   giveawaySetups.delete(uid);
 }
@@ -428,42 +541,97 @@ async function launchGiveaway(ctx, ud) {
  * @param {import('telegraf').Telegraf} bot
  */
 export function registerDiceRollGiveaway(bot) {
-  bot.command(["dice_roll_giveaway", "dice_roll"], async (ctx) => {
-    if (ctx.chat?.type !== "group" && ctx.chat?.type !== "supergroup") {
-      return ctx.replyWithHTML("<b>Use this command in a group.</b>");
+  bot.command("dice_help", async (ctx) => {
+    try {
+      await ctx.replyWithHTML(MSG_FULL_WALKTHROUGH + "\n\n" + MSG_HTML_GUIDE);
+    } catch (e) {
+      console.error("[diceRollGiveaway] dice_help", e);
     }
-    const url = openBotSetupUrl(ctx, ctx.chat.id);
-    if (!url) {
-      return ctx.replyWithHTML(
-        "Set <code>TELEGRAM_BOT_USERNAME</code> or <code>BOT_USERNAME</code> in .env, or ensure the bot received one update so username is known."
-      );
-    }
-    const text =
-      "🚨🎲 <b>DICE ROLL GIVEAWAY</b> 🎲🚨\n\n" +
-      "⚠️ <b>STOP — READ THIS</b> ⚠️\n\n" +
-      "<b>DO NOT PRESS ENTER</b> on the command alone.\n" +
-      "<b>TAP THE BUTTON BELOW</b> — open the bot in private chat to paste claim link(s) and launch.\n\n" +
-      "Multiple winners: one <code>https://</code> URL per line in DM.\n" +
-      `Whisper: private popup only (~${CALLBACK_ALERT_MAX} chars — shorten links).`;
-
-    await ctx.replyWithHTML(text, {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: btnText("👉 TAP HERE — OPEN BOT (do NOT press Enter only)"),
-              url,
-            },
-          ],
-        ],
-      },
-    });
   });
 
-  bot.action(/^dr:su:(dur|max|nwin|go)$/, async (ctx) => {
-    await ctx.answerCbQuery();
+  bot.command(["dice_roll_giveaway", "dice_roll"], async (ctx) => {
+    try {
+      if (ctx.chat?.type !== "group" && ctx.chat?.type !== "supergroup") {
+        return ctx.replyWithHTML("<b>Run this in a group</b> where you want the giveaway.");
+      }
+      const url = openBotSetupUrl(ctx, ctx.chat.id);
+      if (!url) {
+        return ctx.replyWithHTML(
+          "<b>Bot username missing</b>\nSet <code>TELEGRAM_BOT_USERNAME</code> or <code>BOT_USERNAME</code> in <code>.env</code>, or let the bot receive any update first."
+        );
+      }
+      const banner =
+        "<pre>╔════════════════════════════╗\n" +
+        "║  🎲   GIVEAWAY STARTER   🎲  ║\n" +
+        "╚════════════════════════════╝</pre>\n";
+
+      const text =
+        banner +
+        "<b>⚠️ Read before you tap ⚠️</b>\n\n" +
+        "<b>Do NOT</b> only press <b>Enter</b> on the command.\n" +
+        "<b>DO</b> tap the <b>big button</b> below — it opens this bot in <b>private</b> chat.\n\n" +
+        "<b>There you will:</b>\n" +
+        "1. Paste <code>https://</code> prize link(s) — <b>one line per winner</b>\n" +
+        "2. Tap toggles (time / max players / winners)\n" +
+        "3. Tap <b>LAUNCH IN GROUP</b>\n\n" +
+        "<b>Players</b> then use <code>/roll</code> here.\n" +
+        "<b>Prizes</b> = private popup for winners only (~200 char links — shorten!).\n\n" +
+        "<code>/dice_help</code> — full walkthrough + HTML rules";
+
+      await ctx.replyWithHTML(text, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: btnText("👉 OPEN BOT — setup giveaway (tap me)"), url }],
+            [{ text: btnText("📖 What happens next?"), callback_data: "dr:hint:host" }],
+          ],
+        },
+      });
+    } catch (e) {
+      console.error("[diceRollGiveaway] dice_roll_giveaway", e);
+      try {
+        await ctx.reply("⚠️ Something went wrong. Try again or /dice_help");
+      } catch (_) {}
+    }
+  });
+
+  bot.action(/^dr:hint:(play|prize|status|host)$/, async (ctx) => {
+    const kind = ctx.match[1];
+    let text = "";
+    if (kind === "play") {
+      text =
+        "In THIS group, type /roll and send. One roll per person. Wait for the timer to end.";
+    } else if (kind === "prize") {
+      text =
+        "If you won, tap ONLY your Reveal button. Your link opens in a private Telegram popup — others cannot see it.";
+    } else if (kind === "status") {
+      text = "Send /status in the group to see time left and who rolled.";
+    } else {
+      text =
+        "After you tap OPEN BOT: paste prize URLs in DM, adjust buttons, tap LAUNCH. Group sees the live round.";
+    }
+    await safeAnswerCb(ctx, { text: text.slice(0, CALLBACK_ALERT_MAX), show_alert: true });
+  });
+
+  bot.action(/^dr:su:(dur|max|nwin|go|cancel)$/, async (ctx) => {
+    await safeAnswerCb(ctx, {});
     const action = ctx.match[1];
     const uid = ctx.from.id;
+
+    if (action === "cancel") {
+      if (giveawaySetups.has(uid)) {
+        giveawaySetups.delete(uid);
+        try {
+          await ctx.editMessageText("<b>Setup cancelled.</b>\nRun <code>/dice_roll_giveaway</code> in the group to start again.", {
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: [] },
+          });
+        } catch {
+          await ctx.telegram.sendMessage(uid, "<b>Setup cancelled.</b>", { parse_mode: "HTML" });
+        }
+      }
+      return;
+    }
+
     const ud = giveawaySetups.get(uid);
     if (!ud || ud.targetChatId == null) {
       try {
@@ -483,153 +651,204 @@ export function registerDiceRollGiveaway(bot) {
   });
 
   bot.on("text", async (ctx, next) => {
-    if (ctx.chat?.type !== "private") return next();
-    const ud = giveawaySetups.get(ctx.from.id);
-    if (!ud || ud.targetChatId == null) return next();
+    try {
+      if (ctx.chat?.type !== "private") return next();
+      const ud = giveawaySetups.get(ctx.from.id);
+      if (!ud || ud.targetChatId == null) return next();
 
-    const text = (ctx.message.text || "").trim();
-    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-    if (!lines.length) return next();
+      const text = (ctx.message.text || "").trim();
+      const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+      if (!lines.length) return next();
 
-    const urls = lines.filter((l) => /^https?:\/\//i.test(l));
-    if (!urls.length) {
-      return ctx.replyWithHTML("Send lines starting with <code>http://</code> or <code>https://</code>.");
+      const urls = lines.filter((l) => /^https?:\/\//i.test(l));
+      if (!urls.length) {
+        return ctx.replyWithHTML(
+          "<b>Those lines are not links</b>\n" +
+            "Each prize line must start with <code>http://</code> or <code>https://</code>.\n\n" +
+            "<b>Or</b> tap <b>Cancel setup</b> if you want to stop.\n" +
+            "<code>/dice_help</code> for the full guide.",
+          { reply_markup: setupKeyboard(ud) }
+        );
+      }
+      ud.claimUrls = urls;
+      return ctx.replyWithHTML(
+        `<b>✅ Saved ${urls.length} link(s)</b>\n` +
+          `<b>Winners selected:</b> <code>${ud.numWinners}</code> — you need at least that many lines.\n` +
+          "Adjust toggles if needed, then <b>LAUNCH IN GROUP</b>.",
+        { reply_markup: setupKeyboard(ud) }
+      );
+    } catch (e) {
+      console.error("[diceRollGiveaway] private text", e);
+      try {
+        await ctx.reply("⚠️ Could not read that. Try again or /dice_help");
+      } catch (_) {}
     }
-    ud.claimUrls = urls;
-    return ctx.replyWithHTML(
-      `Saved <b>${urls.length}</b> URL(s). Adjust toggles, then <b>LAUNCH IN GROUP</b>.`,
-      { reply_markup: setupKeyboard(ud) }
-    );
   });
 
   bot.command(["create_roll", "create_hunt"], async (ctx) => {
-    if (ctx.chat?.type !== "group" && ctx.chat?.type !== "supergroup") {
-      return ctx.replyWithHTML("Use in a <b>group</b>.");
-    }
-    if (!(await isPrivilegedInGroup(ctx))) {
-      return ctx.replyWithHTML("Only admins can start rounds here.");
-    }
     try {
-      await ctx.deleteMessage();
-    } catch (_) {}
+      if (ctx.chat?.type !== "group" && ctx.chat?.type !== "supergroup") {
+        return ctx.replyWithHTML("Use in a <b>group</b>.");
+      }
+      if (!(await isPrivilegedInGroup(ctx))) {
+        return ctx.replyWithHTML("Only <b>admins</b> can start a quick round here.");
+      }
+      try {
+        await ctx.deleteMessage();
+      } catch (_) {}
 
-    const g = getGame(ctx.chat.id);
-    if (g.isActive) {
-      return ctx.replyWithHTML("A round is already running. ⏳");
-    }
-    const arg = (ctx.args || []).join(" ").trim();
-    if (!arg) {
-      const url = openBotSetupUrl(ctx, ctx.chat.id);
-      return ctx.replyWithHTML(
-        "Usage: <code>/create_roll &lt;url&gt;</code> or <code>/dice_roll_giveaway</code> + button.",
-        url
-          ? {
-              reply_markup: {
-                inline_keyboard: [[{ text: btnText("👉 Open bot setup"), url }]],
-              },
-            }
-          : {}
+      const g = getGame(ctx.chat.id);
+      if (g.isActive) {
+        return ctx.replyWithHTML("<b>Already rolling</b> — a round is live. ⏳");
+      }
+      const arg = (ctx.args || []).join(" ").trim();
+      if (!arg) {
+        const url = openBotSetupUrl(ctx, ctx.chat.id);
+        return ctx.replyWithHTML(
+          "<b>Quick start</b>\n<code>/create_roll https://your-prize-link</code>\n\n" +
+            "<b>Or</b> use <code>/dice_roll_giveaway</code> for the full wizard.",
+          url
+            ? {
+                reply_markup: {
+                  inline_keyboard: [[{ text: btnText("🎯 Full giveaway wizard"), url }]],
+                },
+              }
+            : {}
+        );
+      }
+      if (!/^https?:\/\//i.test(arg)) {
+        return ctx.replyWithHTML("URL must start with <code>http://</code> or <code>https://</code>");
+      }
+
+      clearRevealRound(g);
+      clearTimers(g);
+      g.isActive = true;
+      g.target = randomInt(ROLL_MIN, ROLL_MAX);
+      g.claimUrls = [arg];
+      g.players = new Map();
+      g.durationSec = DEFAULT_DURATION_SEC;
+      g.maxPlayers = 0;
+      g.startTime = Date.now() / 1000;
+
+      let warn = "";
+      if (arg.length > CALLBACK_ALERT_MAX) {
+        warn = `\n⚠️ URL is long — shorten for the <code>${CALLBACK_ALERT_MAX}</code>-char popup.`;
+      }
+      await ctx.replyWithHTML(
+        "<pre>🎲 ─── GO! ─── 🎲</pre>\n" +
+          "<b>Round started!</b>\n" +
+          `<code>/roll</code> once each · <b>${g.durationSec}s</b> on the clock\n` +
+          `<code>/abort_roll</code> · first <b>${ABORT_WINDOW_SEC}s</b> (admins)` +
+          warn,
+        { reply_markup: liveRoundKeyboard() }
       );
+      scheduleRoundEnd(ctx.telegram, ctx.chat.id);
+    } catch (e) {
+      console.error("[diceRollGiveaway] create_roll", e);
+      try {
+        await ctx.reply("⚠️ Could not start round. Try /dice_help");
+      } catch (_) {}
     }
-    if (!/^https?:\/\//i.test(arg)) {
-      return ctx.replyWithHTML("URL must start with http:// or https://");
-    }
-
-    clearRevealRound(g);
-    clearTimers(g);
-    g.isActive = true;
-    g.target = randomInt(ROLL_MIN, ROLL_MAX);
-    g.claimUrls = [arg];
-    g.players = new Map();
-    g.durationSec = DEFAULT_DURATION_SEC;
-    g.maxPlayers = 0;
-    g.startTime = Date.now() / 1000;
-
-    let warn = "";
-    if (arg.length > CALLBACK_ALERT_MAX) {
-      warn = `\n⚠️ URL &gt; ~${CALLBACK_ALERT_MAX} chars — shorten for popup.`;
-    }
-    await ctx.replyWithHTML(
-      "🎲 <b>Dice Roll started!</b>\n" +
-        `<code>/roll</code> once — <b>${g.durationSec}s</b>. <code>/abort_roll</code> first <b>${ABORT_WINDOW_SEC}s</b>.` +
-        warn
-    );
-    scheduleRoundEnd(ctx.telegram, ctx.chat.id);
   });
 
   bot.command(["abort_roll", "abort_hunt"], async (ctx) => {
-    const chatId = ctx.chat.id;
-    const g = getGame(chatId);
-    if (ctx.chat?.type !== "private" && !(await isPrivilegedInGroup(ctx))) {
-      return ctx.replyWithHTML("Only admins can abort when restricted.");
+    try {
+      const chatId = ctx.chat.id;
+      const g = getGame(chatId);
+      if (ctx.chat?.type !== "private" && !(await isPrivilegedInGroup(ctx))) {
+        return ctx.replyWithHTML("Only <b>admins</b> can abort when restrictions are on.");
+      }
+      if (!g.isActive) return ctx.replyWithHTML("No active round.");
+      if (Date.now() / 1000 - g.startTime > ABORT_WINDOW_SEC) {
+        return ctx.replyWithHTML(`Abort only in the first <b>${ABORT_WINDOW_SEC}s</b>.`);
+      }
+      g.isActive = false;
+      clearTimers(g);
+      clearRevealRound(g);
+      return ctx.replyWithHTML("<b>Round cancelled.</b> 🏁");
+    } catch (e) {
+      console.error("[diceRollGiveaway] abort", e);
     }
-    if (!g.isActive) return ctx.replyWithHTML("No active round.");
-    if (Date.now() / 1000 - g.startTime > ABORT_WINDOW_SEC) {
-      return ctx.replyWithHTML(`Abort only in the first ${ABORT_WINDOW_SEC}s.`);
-    }
-    g.isActive = false;
-    clearTimers(g);
-    clearRevealRound(g);
-    return ctx.replyWithHTML("Round cancelled. 🏁");
   });
 
   bot.command("roll", async (ctx) => {
-    const g = getGame(ctx.chat.id);
-    if (!g.isActive) return;
+    try {
+      const g = getGame(ctx.chat.id);
+      if (!g.isActive) return;
 
-    const uid = ctx.from.id;
-    const name = ctx.from.first_name || ctx.from.username || String(uid);
-    if (g.maxPlayers && g.players.size >= g.maxPlayers && !g.players.has(uid)) {
-      return ctx.replyWithHTML("Round is <b>full</b>.");
+      const uid = ctx.from.id;
+      const name = ctx.from.first_name || ctx.from.username || String(uid);
+      if (g.maxPlayers && g.players.size >= g.maxPlayers && !g.players.has(uid)) {
+        return ctx.replyWithHTML("<b>Table full</b> — max players reached for this round.");
+      }
+      if (g.players.has(uid)) {
+        return ctx.replyWithHTML("<b>Already rolled</b> — one shot per round! 🛑");
+      }
+      const val = randomInt(ROLL_MIN, ROLL_MAX);
+      g.players.set(uid, { name, roll: val, ts: Date.now() / 1000 });
+      const face = diceEmojiForRoll(val);
+      return ctx.replyWithHTML(
+        `${face} <b>${escapeHtml(name)}</b> throws the dice… <b>${val}</b>! 🎲✨`
+      );
+    } catch (e) {
+      console.error("[diceRollGiveaway] roll", e);
+      try {
+        await ctx.reply("⚠️ Roll failed — try /roll again");
+      } catch (_) {}
     }
-    if (g.players.has(uid)) {
-      return ctx.replyWithHTML("You already rolled. 🛑");
-    }
-    const val = randomInt(ROLL_MIN, ROLL_MAX);
-    g.players.set(uid, { name, roll: val, ts: Date.now() / 1000 });
-    return ctx.replyWithHTML(`${escapeHtml(name)} rolled <b>${val}</b>. 🎲`);
   });
 
   bot.command("status", async (ctx) => {
-    const g = getGame(ctx.chat.id);
-    if (!g.isActive) return ctx.replyWithHTML("No active round.");
-    const elapsed = Date.now() / 1000 - g.startTime;
-    const left = Math.max(0, Math.floor(g.durationSec - elapsed));
-    const cap = g.maxPlayers ? ` / ${g.maxPlayers}` : "";
-    const lines = [
-      "<b>Round status</b>",
-      `Timer: ~${left}s (${g.durationSec}s)`,
-      `Players: ${g.players.size}${cap}`,
-      `Winner slots: ${g.claimUrls.length}`,
-    ];
-    for (const [, data] of g.players) {
-      lines.push(`• ${escapeHtml(data.name)}: <code>${data.roll}</code>`);
+    try {
+      const g = getGame(ctx.chat.id);
+      if (!g.isActive) return ctx.replyWithHTML("<b>No active round</b> in this chat.");
+      const elapsed = Date.now() / 1000 - g.startTime;
+      const left = Math.max(0, Math.floor(g.durationSec - elapsed));
+      const cap = g.maxPlayers ? ` / ${g.maxPlayers}` : "";
+      const lines = [
+        "<b>📊 Live status</b>",
+        `⏱ <b>~${left}s</b> left · total <code>${g.durationSec}s</code>`,
+        `👥 <b>${g.players.size}</b> rolled${cap}`,
+        `🏆 <b>${g.claimUrls.length}</b> prize slot(s)`,
+        "",
+        "<b>Rolled so far:</b>",
+      ];
+      for (const [, data] of g.players) {
+        lines.push(`• ${escapeHtml(data.name)} → <code>${data.roll}</code>`);
+      }
+      return ctx.replyWithHTML(lines.join("\n"));
+    } catch (e) {
+      console.error("[diceRollGiveaway] status", e);
     }
-    return ctx.replyWithHTML(lines.join("\n"));
   });
 
   bot.action(new RegExp(`^${CB_REVEAL_PREFIX}([0-9a-fA-F]+)$`), async (ctx) => {
-    const nonce = ctx.match[1];
-    const info = revealNonceToInfo.get(nonce);
-    if (!info) {
-      return ctx.answerCbQuery({ text: "Invalid or expired.", show_alert: true });
-    }
-    const { chatId, idx } = info;
-    const g = getGame(chatId);
+    try {
+      const nonce = ctx.match[1];
+      const info = revealNonceToInfo.get(nonce);
+      if (!info) {
+        return safeAnswerCb(ctx, { text: "Expired or invalid button.", show_alert: true });
+      }
+      const { chatId, idx } = info;
+      const g = getGame(chatId);
 
-    const deny = (t) => ctx.answerCbQuery({ text: t.slice(0, CALLBACK_ALERT_MAX), show_alert: true });
+      const deny = (t) => safeAnswerCb(ctx, { text: t.slice(0, CALLBACK_ALERT_MAX), show_alert: true });
 
-    if (!g.revealNonces[idx] || g.revealNonces[idx] !== nonce) {
-      return deny("This button is no longer valid.");
+      if (!g.revealNonces[idx] || g.revealNonces[idx] !== nonce) {
+        return deny("This button is no longer valid.");
+      }
+      if (!g.winnerIds[idx] || ctx.from.id !== g.winnerIds[idx]) {
+        return deny("Not your prize — only the listed winner can open this.");
+      }
+      const url = g.claimUrls[idx];
+      if (!url) return deny("No prize for this slot.");
+      if (url.length > CALLBACK_ALERT_MAX) {
+        return deny(`Link too long for Telegram popup (max ${CALLBACK_ALERT_MAX}). Ask host to shorten.`);
+      }
+      return safeAnswerCb(ctx, { text: url, show_alert: true });
+    } catch (e) {
+      console.error("[diceRollGiveaway] reveal", e);
+      await safeAnswerCb(ctx, { text: "Try again in a moment.", show_alert: true });
     }
-    if (!g.winnerIds[idx] || ctx.from.id !== g.winnerIds[idx]) {
-      return deny("Only the assigned winner can reveal this prize.");
-    }
-    const url = g.claimUrls[idx];
-    if (!url) return deny("No prize for this slot.");
-    if (url.length > CALLBACK_ALERT_MAX) {
-      return deny(`URL too long for popup (max ${CALLBACK_ALERT_MAX}). Use a shortener.`);
-    }
-    return ctx.answerCbQuery({ text: url, show_alert: true });
   });
 }
