@@ -71,6 +71,8 @@ RESTRICT_ROLL_COMMANDS = os.environ.get("RESTRICT_ROLL_COMMANDS", "").lower() in
 if os.environ.get("RESTRICT_HUNT_COMMANDS", "").lower() in ("1", "true", "yes"):
     RESTRICT_ROLL_COMMANDS = True
 
+# Namespace reveal callbacks (matches integrations/gcz-bot Node module: drr + hex)
+CB_REVEAL_PREFIX = "drr"
 _reveal_nonce_to_info: dict[str, tuple[int, int]] = {}  # nonce -> (chat_id, winner_index)
 
 
@@ -318,7 +320,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "<b>Step 2 — Settings</b>\n"
                 "Use the buttons below to change countdown, max players, and winner count. "
                 "Then tap <b>LAUNCH GIVEAWAY IN GROUP</b>.\n\n"
-                "<i>Tip: shorten links so they fit Telegram’s private popup (~200 characters).</i>",
+                "Tip: shorten links so they fit Telegram’s private popup (~200 characters).",
                 reply_markup=setup_settings_keyboard(context.user_data["giveaway_setup"]),
             )
             return
@@ -701,14 +703,10 @@ def _pick_winners(g: DiceRound, k: int) -> list[tuple[int, str, int, int]]:
 def multi_reveal_keyboard(nonces: list[str], labels: list[str]) -> InlineKeyboardMarkup:
     rows = []
     for nonce, label in zip(nonces, labels):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    label,
-                    callback_data=f"r{nonce}",
-                )
-            ]
-        )
+        data = f"{CB_REVEAL_PREFIX}{nonce}"
+        if len(data.encode("utf-8")) > 64:
+            log.error("reveal callback_data too long")
+        rows.append([InlineKeyboardButton(label, callback_data=data)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -806,9 +804,9 @@ async def on_reveal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     q = update.callback_query
     if not q or not q.data or not q.from_user:
         return
-    if not q.data.startswith("r"):
+    if not q.data.startswith(CB_REVEAL_PREFIX):
         return
-    nonce = q.data[1:]
+    nonce = q.data[len(CB_REVEAL_PREFIX) :]
     info = _reveal_nonce_to_info.get(nonce)
     if not info:
         await q.answer(text="Invalid or expired button.", show_alert=True)
@@ -863,7 +861,9 @@ def main() -> None:
     application.add_handler(CommandHandler("abort_hunt", abort_roll))
     application.add_handler(CommandHandler("roll", roll))
     application.add_handler(CallbackQueryHandler(on_setup_callback, pattern=r"^su:"))
-    application.add_handler(CallbackQueryHandler(on_reveal_callback, pattern=r"^r[0-9a-fA-F]+$"))
+    application.add_handler(
+        CallbackQueryHandler(on_reveal_callback, pattern=r"^drr[0-9a-fA-F]+$")
+    )
     application.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
