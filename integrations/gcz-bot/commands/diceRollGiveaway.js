@@ -1,17 +1,23 @@
 /**
- * Dice Roll Giveaway — drop into `bot/commands/` and wire from `bots-hub.js` (PM2) or `bot.js`.
+ * Dice Roll Giveaway — Gamblecodez `bot/commands/diceRollGiveaway.js`
  *
- * Telegraf 4.x. Merge into your existing `bot.start` via tryHandleGiveawayStart (see below).
+ * ESM (matches bots-hub.js / bot.js `import` style).
+ * Wire from `/var/www/html/gcz/bot/bot.js` only — bots-hub.js stays unchanged; it already
+ * forwards `POST /webhook` → `bot.handleUpdate()` (KVM1_MODE=1, no polling).
  *
- * Env (/var/www/html/gcz/.env): BOT_TOKEN (existing), optional BOT_USERNAME, BOT_ADMINS,
- * RESTRICT_ROLL_COMMANDS or RESTRICT_HUNT_COMMANDS.
+ * Env (/var/www/html/gcz/.env):
+ *   TELEGRAM_BOT_TOKEN     — already used by your bot (Telegraf)
+ *   TELEGRAM_BOT_USERNAME  — optional; fallback for t.me/ links if botInfo missing
+ *   BOT_USERNAME           — optional alias for username
+ *   BOT_ADMINS             — optional comma-separated Telegram user IDs
+ *   RESTRICT_ROLL_COMMANDS / RESTRICT_HUNT_COMMANDS — "true"|"1"|"yes" → admin-only host cmds
  */
 
-const crypto = require("crypto");
+import crypto from "crypto";
 
 const CALLBACK_ALERT_MAX = 200;
 const GIVE_PREFIX = "give_";
-const CB_REVEAL_PREFIX = "drr"; // namespace reveal callbacks
+const CB_REVEAL_PREFIX = "drr";
 const DEFAULT_DURATION_SEC = 210;
 const ABORT_WINDOW_SEC = 30;
 const ROLL_MIN = 1;
@@ -79,7 +85,7 @@ function escapeHtml(s) {
 const games = new Map();
 /** @type {Map<string, { chatId: number, idx: number }>} */
 const revealNonceToInfo = new Map();
-/** userId -> setup wizard state (no Telegraf session required) */
+/** userId -> setup wizard state */
 const giveawaySetups = new Map();
 
 function getGame(chatId) {
@@ -102,7 +108,7 @@ function getGame(chatId) {
 }
 
 function clearTimers(g) {
-  if (g.timers && g.timers.length) {
+  if (g.timers?.length) {
     g.timers.forEach((t) => clearTimeout(t));
     g.timers = [];
   }
@@ -138,8 +144,17 @@ async function isUserAdminOfChat(ctx, userId, chatId) {
   }
 }
 
+function botUsernameFromCtx(ctx) {
+  return (
+    ctx.botInfo?.username ||
+    process.env.TELEGRAM_BOT_USERNAME ||
+    process.env.BOT_USERNAME ||
+    null
+  );
+}
+
 function openBotSetupUrl(ctx, groupChatId) {
-  const me = ctx.botInfo?.username || process.env.BOT_USERNAME;
+  const me = botUsernameFromCtx(ctx);
   if (!me) return null;
   const payload = `${GIVE_PREFIX}${encodeChatId(groupChatId)}`;
   if (payload.length > 64) return null;
@@ -197,11 +212,11 @@ function pickWinners(g, k) {
 }
 
 /**
- * Call from your existing bot.start handler first.
+ * Call first inside your private-chat /start handler.
  * @param {import('telegraf').Context} ctx
- * @returns {Promise<boolean>} true if this bot handled the update
+ * @returns {Promise<boolean>}
  */
-async function tryHandleGiveawayStart(ctx) {
+export async function tryHandleGiveawayStart(ctx) {
   if (ctx.chat?.type !== "private") return false;
   const payload = ctx.startPayload || "";
   if (!payload.startsWith(GIVE_PREFIX)) return false;
@@ -412,7 +427,7 @@ async function launchGiveaway(ctx, ud) {
 /**
  * @param {import('telegraf').Telegraf} bot
  */
-function registerDiceRollGiveaway(bot) {
+export function registerDiceRollGiveaway(bot) {
   bot.command(["dice_roll_giveaway", "dice_roll"], async (ctx) => {
     if (ctx.chat?.type !== "group" && ctx.chat?.type !== "supergroup") {
       return ctx.replyWithHTML("<b>Use this command in a group.</b>");
@@ -420,7 +435,7 @@ function registerDiceRollGiveaway(bot) {
     const url = openBotSetupUrl(ctx, ctx.chat.id);
     if (!url) {
       return ctx.replyWithHTML(
-        "Set <code>BOT_USERNAME</code> in .env or ensure the bot ran <code>getMe</code> once."
+        "Set <code>TELEGRAM_BOT_USERNAME</code> or <code>BOT_USERNAME</code> in .env, or ensure the bot received one update so username is known."
       );
     }
     const text =
@@ -618,8 +633,3 @@ function registerDiceRollGiveaway(bot) {
     return ctx.answerCbQuery({ text: url, show_alert: true });
   });
 }
-
-module.exports = {
-  registerDiceRollGiveaway,
-  tryHandleGiveawayStart,
-};

@@ -5,7 +5,7 @@ This repo ships **two runnable forms** of the same product:
 | Piece | Use case |
 |-------|-----------|
 | **`bot.py`** + `keep_alive.py` | Standalone Python on VPS, Replit, or PM2 (`python bot.py`) — **webhook-first** or **polling** |
-| **`integrations/gcz-bot/`** | Drop into **Node/Telegraf** (`commands/diceRollGiveaway.js`) and wire **`bots-hub.js`** or `bot.js` — see `README-INTEGRATION.md` |
+| **`integrations/gcz-bot/`** | **ESM** Telegraf module for Gamblecodez: wire **`bot.js` only**; **`bots-hub.js`** already calls `bot.handleUpdate()` — see `integrations/gcz-bot/README-INTEGRATION.md` |
 
 Dice giveaway with **Cwallet-style HTTPS claim links**, **multi-winner** (one URL per winner line), **countdown**, **max players**, and **winner-only whisper** via **callback popup** (no DMs). Reveal callbacks use prefix **`drr`** so Python and Node builds stay aligned.
 
