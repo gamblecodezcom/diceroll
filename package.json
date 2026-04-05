@@ -1,0 +1,16 @@
+{
+  "name": "dice-roll-giveaway-telegram",
+  "version": "1.0.0",
+  "description": "Telegraf module: dice roll giveaway with callback whisper prizes",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./commands/diceRollGiveaway.js"
+  },
+  "peerDependencies": {
+    "telegraf": "^4.16.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

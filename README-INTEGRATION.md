@@ -80,11 +80,7 @@ abort_roll - Abort first 30s
 status - Status
 ```
 
-## 6. Python `bot.py` on same VPS
-
-Same **`TELEGRAM_BOT_TOKEN`** as Node → **only one** runtime may use it. Use **either** the Node integration **or** the Python bot, or use two bots/tokens.
-
-## 7. Behaviour
+## 6. Behaviour
 
 - Group: `/dice_roll_giveaway` → ASCII banner + **tap to open bot** + optional “what next” callback.
 - Live round: inline **How do I play?** / **prizes** / **status** (callbacks answered so Telegram never spins).
@@ -92,6 +88,6 @@ Same **`TELEGRAM_BOT_TOKEN`** as Node → **only one** runtime may use it. Use *
 - `/dice_help` — full start-to-finish + allowed HTML tags note.
 - Winners: **Reveal** → **`answerCallbackQuery` popup only** (~200 char URL max). Errors use `safeAnswerCb` so old queries do not crash the handler.
 
-## 8. Legacy CommonJS
+## 7. Legacy CommonJS
 
 If your `bot` package is still CJS (`require`), rename or duplicate this file to `.cjs` and use `module.exports` — or finish migrating `bot.js` to ESM (`"type": "module"`).

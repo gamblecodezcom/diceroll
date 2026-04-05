@@ -1,7 +1,0 @@
-run = "python bot.py"
-language = "python3"
-modules = ["python-3.10"]
-
-[deployment]
-run = ["python", "bot.py"]
-deploymentTarget = "cloudrun"
