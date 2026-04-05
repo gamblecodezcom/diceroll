@@ -1,71 +1,68 @@
-# Dice Hunt Telegram Bot
+# Dice Roll Telegram Bot
 
-Group dice game: closest roll to a secret target wins. The prize URL is removed from the group (when the bot can delete the command) and sent to the winner by **private message**.
+Group game: closest roll to a secret target wins. The host attaches a **Cwallet (or any) HTTPS claim URL** when starting a round. The URL is **not** shown in the group. After the round, only the winner can use **Reveal claim link** — implemented with **inline keyboards and callback queries** (private popup and/or DM), because Telegram cannot show different text in the same group message bubble per user.
+
+## Whisper / winner-only reveal
+
+- Everyone sees the same winner announcement message with an inline button.
+- On tap, Telegram sends a **CallbackQuery** to the bot. The bot calls `answerCallbackQuery`:
+  - **Winner:** alert confirms + **full URL sent in private chat** when possible; if the URL is short enough and DMs fail, it may appear only in the popup.
+  - **Non-winner:** alert only: *"Only the round winner can reveal"* — no URL leaked.
 
 ## Features
 
-- **Per-chat games** — multiple groups can run hunts at the same time.
-- **HTML messages** — only [Telegram-supported tags](https://core.telegram.org/bots/api#html-style) (`<b>`, `<code>`, `<a>`, …). Line breaks are **plain newline characters** in the text, not `<br>` or other layout tags.
-- **Join flow** — inline button and `/join` open `t.me/YourBot?start=join_<group_id>` so players press **Start** in DM; then `/roll` works in the group and the bot can DM the prize.
-- **Background timer** — non-blocking; reminder at 105s; winner announcement at 210s.
-- **Keep-alive HTTP** — `GET /` and `GET /health` on `PORT` (default `8080`, bind `0.0.0.0`) for Replit, fps.ms, or other hosts that expect a web process.
+- **Per-chat rounds** — many groups at once.
+- **HTML** — [Telegram-supported tags](https://core.telegram.org/bots/api#html-style) only; line breaks are newline characters, not `<br>`.
+- **Join flow** — deep link + `/join` so the bot can DM the winner if needed.
+- **Aliases** — `/create_hunt`, `/abort_hunt` still work (same as `/create_roll`, `/abort_roll`).
+- **Optional HTTP** — `GET /` and `/health` on `PORT` for uptime checks.
 
 ## Setup
 
-1. Create a bot with [@BotFather](https://t.me/BotFather), copy the token.
-2. **Disable Group Privacy** (BotFather → Bot Settings → Group Privacy → **Turn off**) so the bot receives `/roll` and other commands in groups.
-3. In the group, add the bot and give it **Delete messages** if you want `/create_hunt` messages removed.
+1. Bot from [@BotFather](https://t.me/BotFather).
+2. **Group privacy off** so `/roll` works in groups.
+3. **Delete messages** optional — hides the host command that contains the URL.
 
-### Environment variables
+### Environment
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `BOT_TOKEN` | Yes | Token from BotFather |
-| `PORT` | No | HTTP port (default `8080`) |
-| `BIND` | No | Bind address (default `0.0.0.0`) |
-| `BOT_USERNAME` | No | Fallback if username discovery fails (no `@`) |
-| `BOT_ADMINS` | No | Comma-separated Telegram user IDs (always allowed for hunt commands when restriction is on) |
-| `RESTRICT_HUNT_COMMANDS` | No | If `true` / `1` / `yes`, only **chat admins** (and `BOT_ADMINS`) may `/create_hunt` and `/abort_hunt` in groups |
+| Variable | Description |
+|----------|-------------|
+| `BOT_TOKEN` | Required |
+| `PORT` | HTTP port (default `8080`) — **use another port** if your Node app uses `8080` |
+| `BIND` | Default `0.0.0.0` |
+| `RESTRICT_ROLL_COMMANDS` | `true` / `1` / `yes` → only admins (+ `BOT_ADMINS`) start/abort |
+| `RESTRICT_HUNT_COMMANDS` | Legacy alias for the same flag |
+| `BOT_ADMINS` | Comma-separated Telegram user IDs |
+| `BOT_USERNAME` | Optional fallback |
 
-Copy `.env.example` to `.env` locally if you use a loader; on Replit/fps.ms set secrets in the dashboard.
+## VPS + PM2 (alongside Node)
 
-## Run locally
+Use a **separate `BOT_TOKEN`** for each bot process, or only one process may poll.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+cd /path/to/this/repo
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-export BOT_TOKEN="your_token"
-python bot.py
+export BOT_TOKEN="..." PORT=8090
+pm2 start ecosystem.config.example.cjs --only dice-roll-bot
+# Or merge the `dice-roll-bot` entry into your existing `ecosystem.config.cjs`
 ```
-
-Open `http://127.0.0.1:8080/health` to verify the keep-alive server.
-
-## Replit
-
-1. New Repl → import this repo or upload files.
-2. Add secret `BOT_TOKEN`.
-3. Replit sets `PORT` automatically; the bot listens on `0.0.0.0`.
-4. Run `python bot.py` (or use the Run button with `.replit`).
-
-## fps.ms / generic PaaS
-
-- Set `BOT_TOKEN` and ensure the platform injects `PORT`.
-- Start command: `python bot.py` (see `Procfile` as `web:` for process types that require an HTTP port).
-- Point uptime pings at `https://your-app/health` if needed.
 
 ## Commands (groups)
 
-- `/create_hunt <https://prize...>` — start a hunt (link message deleted if permitted).
-- `/join` — posts the **Join** button (deep link to bot + Start).
-- `/roll` — roll once (after joining via button in groups).
-- `/abort_hunt` — cancel in the first 30 seconds.
-- `/status` — time left and rolls.
+- `/create_roll <https://...>` — start round (URL removed from chat if delete allowed). Alias: `/create_hunt`.
+- `/join` — join button.
+- `/roll` — once per round (after join in groups).
+- `/abort_roll` — first 30s. Alias: `/abort_hunt`.
+- `/status`
 
-## Commands (anywhere)
+## Commands (DM)
 
-- `/start` — help and deep-link registration when opened from the join URL.
-- `/help`, `/rules` — documentation.
+- `/start`, `/help`, `/rules`
+
+## Merging into a monorepo
+
+Copy `bot.py`, `keep_alive.py`, `requirements.txt`, and the PM2 snippet into your backend tree (e.g. `telegram/dice-roll/`). Install Python deps in that environment; run as a second PM2 app with its own `PORT` and token.
 
 ## License
 

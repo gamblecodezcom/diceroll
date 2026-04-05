@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return "Dice Hunt bot is running.", 200
+    return "Dice Roll bot is running.", 200
 
 
 @app.route("/health")
