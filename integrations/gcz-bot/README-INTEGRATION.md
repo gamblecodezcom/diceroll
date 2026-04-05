@@ -1,7 +1,11 @@
-# Merge Dice Roll Giveaway into `bot/bot.js` (Gamblecodez VPS)
+# Merge Dice Roll Giveaway (PM2 → `bots-hub.js`)
 
 Path on VPS: `/var/www/html/gcz/bot`  
 Env: `/var/www/html/gcz/.env` (same `BOT_TOKEN` as the rest of the bot — **one** process must own polling/webhook).
+
+**PM2** starts **`bots-hub.js`**, not `bot.js`. Put the giveaway wiring where your **Telegraf instance is created and launched** (often `bots-hub.js`, or a module it imports from `bot.js`).
+
+See `bots-hub.snippet.js` for a minimal paste pattern.
 
 ## 1. Copy the command file
 
@@ -11,15 +15,15 @@ Copy `commands/diceRollGiveaway.js` into your repo:
 /var/www/html/gcz/bot/commands/diceRollGiveaway.js
 ```
 
-## 2. Wire `bot.js`
+## 2. Wire `bots-hub.js` (or shared bot factory)
 
-Use **Telegraf** (matches this module). At the top:
+Use **Telegraf** (matches this module). Where you have the live `bot` instance:
 
 ```js
 const { registerDiceRollGiveaway, tryHandleGiveawayStart } = require("./commands/diceRollGiveaway");
 ```
 
-**Important:** your existing `bot.start(...)` must run the giveaway deep-link **first**, then your normal `/start` logic:
+**Important:** `/start` must run the giveaway deep-link **first**, then your normal private `/start`:
 
 ```js
 bot.start(async (ctx, next) => {
@@ -29,13 +33,15 @@ bot.start(async (ctx, next) => {
 });
 ```
 
-After other middleware (session, etc.), register handlers:
+After session/middleware (if any), register handlers **once**:
 
 ```js
 registerDiceRollGiveaway(bot);
 ```
 
-Register **once**. Order relative to other `text` handlers: if another `bot.on("text")` runs first and never calls `next()`, move `registerDiceRollGiveaway` **above** it or chain `next()` correctly.
+If `bot.start` is defined inside **`bot.js`** and `bots-hub.js` only `require("./bot")` / `launch()`, edit **`bot.js`** for `tryHandleGiveawayStart` + `registerDiceRollGiveaway` instead — the rule is: whichever file attaches handlers to the Telegraf instance PM2 runs.
+
+**Handler order:** if another `bot.on("text")` runs first and never calls `next()`, move `registerDiceRollGiveaway` **above** it or fix `next()` chaining.
 
 ## 3. BotFather commands (optional)
 

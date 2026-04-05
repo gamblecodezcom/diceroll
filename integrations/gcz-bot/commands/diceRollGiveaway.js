@@ -1,5 +1,5 @@
 /**
- * Dice Roll Giveaway — drop into Gamblecodez `bot/commands/` and wire from `bot.js`.
+ * Dice Roll Giveaway — drop into `bot/commands/` and wire from `bots-hub.js` (PM2) or `bot.js`.
  *
  * Telegraf 4.x. Merge into your existing `bot.start` via tryHandleGiveawayStart (see below).
  *
